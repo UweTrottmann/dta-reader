@@ -24,6 +24,7 @@ import java.io.InputStream
 import java.net.URL
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.time.Instant
 import kotlin.experimental.and
 
 /**
@@ -67,11 +68,10 @@ class DtaFileReader {
     private fun parseHeader(bufferedSource: BufferedSource): Header {
         // Byte [4:7]: size of header
         val headerSize = bufferedSource.readIntLe()
-        val headerBytes = ByteArray(headerSize)
-        val bytesRead = bufferedSource.read(headerBytes)
-        if (bytesRead == -1 || bytesRead != headerBytes.size) {
+        if (!bufferedSource.request(headerSize.toLong())) {
             throw IOException("Header is not $headerSize bytes long")
         }
+        val headerBytes = bufferedSource.readByteArray(headerSize.toLong())
         val headerBuffer = ByteBuffer.wrap(headerBytes).order(ByteOrder.LITTLE_ENDIAN)
 
         // Byte [8:9]: number of data sets
@@ -178,14 +178,13 @@ class DtaFileReader {
 
     private fun parseDataSets(bufferedSource: BufferedSource, count: Short, dataSetLength: Int) {
         for (i in 0 until count) {
-            val bytes = ByteArray(dataSetLength)
-            val bytesRead = bufferedSource.read(bytes)
-            if (bytesRead == -1 || bytesRead != bytes.size) {
-                throw IOException("Data set is not $dataSetLength bytes long")
+            if (!bufferedSource.request(dataSetLength.toLong())) {
+                throw IOException("Data set $i is not $dataSetLength bytes long.")
             }
+            val bytes = bufferedSource.readByteArray(dataSetLength.toLong())
             val buffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
 
-            val timestamp = buffer.int // unix time in seconds
+            val epochSecond = buffer.int // unix time in seconds
             // FIXME Need fields in header order.
         }
     }
