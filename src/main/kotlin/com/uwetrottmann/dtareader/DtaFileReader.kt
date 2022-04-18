@@ -24,7 +24,6 @@ import java.io.InputStream
 import java.net.URL
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import java.time.Instant
 import kotlin.experimental.and
 
 /**
@@ -47,20 +46,19 @@ class DtaFileReader {
                 }
 
                 val header = parseHeader(bufferedSource)
-                parseDataSets(bufferedSource, header.datasetsToRead, header.datasetLength.toInt())
+                val datasets = parseDataSets(bufferedSource, header)
 
                 return DtaFile(
                     version,
-                    header.analogueFields,
-                    header.digitalFields
+                    header.fields,
+                    datasets
                 )
             }
         }
     }
 
     private data class Header(
-        val analogueFields: List<AnalogueField>,
-        val digitalFields: List<DigitalField>,
+        val fields: List<ReadableField>,
         val datasetsToRead: Short,
         val datasetLength: Short
     )
@@ -82,8 +80,7 @@ class DtaFileReader {
             throw IOException("Data set length is smaller than 6 bytes (at least timestamp + 2 byte field)")
         }
 
-        val analogueFields = mutableListOf<AnalogueField>()
-        val digitalFields = mutableListOf<DigitalField>()
+        val fields = mutableListOf<ReadableField>()
         var category = ""
         while (headerBuffer.hasRemaining()) {
             val fieldId = headerBuffer.get()
@@ -99,7 +96,7 @@ class DtaFileReader {
                     val factor = if (fieldId and 0x80.toByte() != 0x0.toByte()) {
                         headerBuffer.short
                     } else 10
-                    analogueFields.add(AnalogueField(category, name, color, factor))
+                    fields.add(AnalogueField(category, name, color, factor))
                 }
                 0x02.toByte(), 0x04.toByte() -> {
                     // Digital field
@@ -142,7 +139,7 @@ class DtaFileReader {
                             )
                         )
                     }
-                    digitalFields.add(DigitalField(values))
+                    fields.add(DigitalField(values))
                 }
                 0x03.toByte() -> {
                     // TODO Appears not used in test file, so not implementing.
@@ -163,30 +160,42 @@ class DtaFileReader {
         }
 
         // Check number of fields * 2 (length of value) == data set length
-        val expectedDataSetLength = analogueFields.size * 2 + digitalFields.size * 2 + 4 // 4 byte time stamp
+        val expectedDataSetLength = fields.size * 2 + 4 // 4 byte time stamp
         if (expectedDataSetLength != datasetLength.toInt()) {
             throw IOException("Announced data set length ($datasetLength bytes) does not match fields ($expectedDataSetLength bytes)")
         }
 
         return Header(
-            analogueFields,
-            digitalFields,
+            fields,
             datasetsToRead,
             datasetLength
         )
     }
 
-    private fun parseDataSets(bufferedSource: BufferedSource, count: Short, dataSetLength: Int) {
-        for (i in 0 until count) {
+    private fun parseDataSets(bufferedSource: BufferedSource, header: Header): List<DataSet> {
+        val dataSetLength = header.datasetLength
+        val datasets = mutableListOf<DataSet>()
+        for (i in 0 until header.datasetsToRead) {
             if (!bufferedSource.request(dataSetLength.toLong())) {
                 throw IOException("Data set $i is not $dataSetLength bytes long.")
             }
             val bytes = bufferedSource.readByteArray(dataSetLength.toLong())
             val buffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
 
-            val epochSecond = buffer.int // unix time in seconds
-            // FIXME Need fields in header order.
+            // First 4 bytes are unix time in seconds
+            val epochSecond = buffer.int
+            // Then for each field 2 bytes
+            val fieldValues = mutableListOf<List<Double>>()
+            header.fields.forEach { fieldValues.add(it.readValue(buffer)) }
+
+            datasets.add(
+                DataSet(
+                    epochSecond.toLong(),
+                    fieldValues
+                )
+            )
         }
+        return datasets
     }
 
     private fun readString(buffer: ByteBuffer): String {
@@ -215,20 +224,39 @@ class DtaFileReader {
 
     data class DtaFile(
         val version: Int,
-        val analogueFields: List<AnalogueField>,
-        val digitalFields: List<DigitalField>
-    )
+        val fields: List<ReadableField>,
+        val datasets: List<DataSet>
+    ) {
+        val analogueFields: List<AnalogueField> = fields.filterIsInstance<AnalogueField>()
+        val digitalFields: List<DigitalField> = fields.filterIsInstance<DigitalField>()
+    }
+
+    interface ReadableField {
+        fun readValue(byteBuffer: ByteBuffer): List<Double>
+    }
 
     data class AnalogueField(
         val category: String,
         val name: String,
         val color: Int,
         val factor: Short
-    )
+    ) : ReadableField {
+        override fun readValue(byteBuffer: ByteBuffer): List<Double> {
+            val value = byteBuffer.short
+            return listOf(value.toDouble() / factor)
+        }
+    }
 
     data class DigitalField(
         val values: List<DigitalValue>
-    )
+    ) : ReadableField {
+        override fun readValue(byteBuffer: ByteBuffer): List<Double> {
+            val value = byteBuffer.short.toInt()
+            return List(values.size) { index ->
+                if (value and (1 shl index) != 0) 1.0 else 0.0
+            }
+        }
+    }
 
     data class DigitalValue(
         val category: String,
@@ -240,4 +268,9 @@ class DtaFileReader {
     )
 
     enum class DigitalType { INPUT, OUTPUT }
+
+    data class DataSet(
+        val timestampEpochSecond: Long,
+        val fieldValues: List<List<Double>>
+    )
 }

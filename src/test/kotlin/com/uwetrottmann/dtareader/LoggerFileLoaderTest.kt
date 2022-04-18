@@ -18,6 +18,8 @@ package com.uwetrottmann.dtareader
 
 import org.junit.Test
 import java.io.File
+import java.time.Instant
+import kotlin.test.assertEquals
 
 class LoggerFileLoaderTest {
 
@@ -30,8 +32,16 @@ class LoggerFileLoaderTest {
 
         val loader = DtaFileReader()
         val readLoggerFile = loader.readLoggerFile(testFileInputStream)
-        readLoggerFile.analogueFields.forEach { println(it) }
-        readLoggerFile.digitalFields.forEach { println(it) }
+        readLoggerFile.fields.forEach { println(it) }
+        assertEquals(22, readLoggerFile.fields.size)
+        assertEquals(20, readLoggerFile.analogueFields.size)
+        assertEquals(2, readLoggerFile.digitalFields.size)
+
+        assertEquals(2880, readLoggerFile.datasets.size)
+        readLoggerFile.datasets.forEach {
+            assertEquals(20 + 2, it.fieldValues.size)
+            println("${Instant.ofEpochSecond(it.timestampEpochSecond)} ${it.fieldValues}")
+        }
     }
 
 }
