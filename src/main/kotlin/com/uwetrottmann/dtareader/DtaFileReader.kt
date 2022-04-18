@@ -30,32 +30,6 @@ import kotlin.experimental.and
  */
 class DtaFileReader {
 
-    data class DtaFile(
-        val version: Int,
-        val fieldDefSize: Int,
-        val datasetsToRead: Short,
-        val datasetLength: Short,
-        val analogueFields: List<AnalogueDataField>,
-        val digitalFields: List<DigitalDataField>
-    )
-
-    data class AnalogueDataField(
-        val category: String,
-        val name: String,
-        val color: Int,
-        val factor: Short
-    )
-
-    data class DigitalDataField(
-        val items: List<DigitalDataFieldItem>
-    )
-
-    data class DigitalDataFieldItem(
-        val category: String,
-        val name: String,
-        val color: Int
-    )
-
     fun getLoggerFileStream(host: String): InputStream? {
         val url = URL("http://$host/NewProc")
         return url.openConnection().getInputStream()
@@ -84,8 +58,8 @@ class DtaFileReader {
                 // Byte [10:11]: length of a data set
                 val datasetLength = headerBuffer.short
 
-                val fields = mutableListOf<AnalogueDataField>()
-                val digitalFields = mutableListOf<DigitalDataField>()
+                val analogueFields = mutableListOf<AnalogueField>()
+                val digitalFields = mutableListOf<DigitalField>()
                 var category = ""
                 while (headerBuffer.hasRemaining()) {
                     val fieldId = headerBuffer.get()
@@ -101,34 +75,50 @@ class DtaFileReader {
                             val factor = if (fieldId and 0x80.toByte() != 0x0.toByte()) {
                                 headerBuffer.short
                             } else 10
-                            fields.add(AnalogueDataField(category, name, color, factor))
+                            analogueFields.add(AnalogueField(category, name, color, factor))
                         }
                         0x02.toByte(), 0x04.toByte() -> {
                             // Digital field
                             val count = headerBuffer.get()
                             val visibility = if (fieldId and 0x40.toByte() != 0x0.toByte()) {
                                 headerBuffer.short
-                            } else 0xFFFF.toShort()
+                            } else 0xFFFF.toShort() // All visible.
 
-                            val factoryOnlyAll = if (fieldId and 0x20.toByte() != 0x0.toByte()) {
+                            val customerSupportOnly = if (fieldId and 0x20.toByte() != 0x0.toByte()) {
                                 headerBuffer.short
-                            } else 0xFFFF.toShort()
+                            } else 0x0.toShort() // None intended for customer support.
 
-                            val inOutSeparate = if (fieldId and 0x04.toByte() != 0x0.toByte()) {
+                            val directions = if (fieldId and 0x04.toByte() != 0x0.toByte()) {
                                 headerBuffer.short
                             } else if (fieldId and 0x80.toByte() != 0x0.toByte()) {
+                                // All values are outputs.
                                 0xFFFF.toShort()
-                            } else 0x0.toShort()
+                            } else {
+                                // All values are inputs.
+                                0x0.toShort()
+                            }
 
-                            val items = mutableListOf<DigitalDataFieldItem>()
+                            val values = mutableListOf<DigitalValue>()
                             for (i in 0 until count) {
                                 val name = readString(headerBuffer)
-
                                 val color = readColor(headerBuffer)
-
-                                items.add(DigitalDataFieldItem(category, name, color))
+                                val type = if (directions.toInt() and (1 shl i) != 0) {
+                                    DigitalType.OUTPUT
+                                } else {
+                                    DigitalType.INPUT
+                                }
+                                values.add(
+                                    DigitalValue(
+                                        category,
+                                        name,
+                                        color,
+                                        visibility.toInt() and (1 shl i) != 0,
+                                        customerSupportOnly.toInt() and (1 shl i) != 0,
+                                        type
+                                    )
+                                )
                             }
-                            digitalFields.add(DigitalDataField(items))
+                            digitalFields.add(DigitalField(values))
                         }
                         0x03.toByte() -> {
                             // Enum field
@@ -152,7 +142,7 @@ class DtaFileReader {
                     headerSize,
                     datasetsToRead,
                     datasetLength,
-                    fields,
+                    analogueFields,
                     digitalFields
                 )
             }
@@ -182,4 +172,35 @@ class DtaFileReader {
     companion object {
         const val VERSION_9003 = 9003
     }
+
+    data class DtaFile(
+        val version: Int,
+        val fieldDefSize: Int,
+        val datasetsToRead: Short,
+        val datasetLength: Short,
+        val analogueFields: List<AnalogueField>,
+        val digitalFields: List<DigitalField>
+    )
+
+    data class AnalogueField(
+        val category: String,
+        val name: String,
+        val color: Int,
+        val factor: Short
+    )
+
+    data class DigitalField(
+        val values: List<DigitalValue>
+    )
+
+    data class DigitalValue(
+        val category: String,
+        val name: String,
+        val color: Int,
+        val visible: Boolean,
+        val customerServiceOnly: Boolean,
+        val type: DigitalType
+    )
+
+    enum class DigitalType { INPUT, OUTPUT }
 }
