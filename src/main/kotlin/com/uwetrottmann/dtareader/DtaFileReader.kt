@@ -16,12 +16,13 @@
 
 package com.uwetrottmann.dtareader
 
-import okio.BufferedSource
 import okio.IOException
 import okio.buffer
 import okio.source
 import java.io.InputStream
 import java.net.URL
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import kotlin.experimental.and
 
 /**
@@ -65,80 +66,65 @@ class DtaFileReader {
             source.buffer().use { bufferedSource ->
                 // Byte [0:3]: version
                 val version = bufferedSource.readIntLe()
-                // Byte [4:7]: size of field definitions
-                val fieldDefSize = bufferedSource.readIntLe()
+                if (version != VERSION_9003) {
+                    throw IOException("Version is not $VERSION_9003")
+                }
 
-                var readFieldDefBytes = 0
+                // Byte [4:7]: size of header
+                val headerSize = bufferedSource.readIntLe()
+                val headerBytes = ByteArray(headerSize)
+                val bytesRead = bufferedSource.read(headerBytes)
+                if (bytesRead == -1 || bytesRead != headerBytes.size) {
+                    throw IOException("Header is not $headerSize bytes long")
+                }
+                val headerBuffer = ByteBuffer.wrap(headerBytes).order(ByteOrder.LITTLE_ENDIAN)
+
                 // Byte [8:9]: number of data sets
-                val datasetsToRead = bufferedSource.readShortLe()
-                readFieldDefBytes += 2
+                val datasetsToRead = headerBuffer.short
                 // Byte [10:11]: length of a data set
-                val datasetLength = bufferedSource.readShortLe()
-                readFieldDefBytes += 2
+                val datasetLength = headerBuffer.short
 
                 val fields = mutableListOf<AnalogueDataField>()
                 val digitalFields = mutableListOf<DigitalDataField>()
                 var category = ""
-
-                val fieldBytes = ByteArray(fieldDefSize - 4)
-                val bytesRead = bufferedSource.read(fieldBytes)
-                if (bytesRead == -1 || bytesRead != fieldBytes.size) {
-                    throw IOException("Does not contain expected size of field definitions")
-                }
-
-                // FIXME Length not correct, about 20 bytes too short
-                while (readFieldDefBytes < fieldDefSize) {
-                    val fieldId = bufferedSource.readByte()
-                    val fieldType = fieldId and 0x0F
-                    when (fieldType) {
+                while (headerBuffer.hasRemaining()) {
+                    val fieldId = headerBuffer.get()
+                    when (val fieldType = fieldId and 0x0F) {
                         0x00.toByte() -> {
                             // Category
-                            category = readString(bufferedSource)
-                            readFieldDefBytes += category.length + 1 // 0 terminator
+                            category = readString(headerBuffer)
                         }
                         0x01.toByte() -> {
                             // Analogue field
-                            val name = readString(bufferedSource)
-                            readFieldDefBytes += name.length + 1 // 0 terminator
-
-                            val color = readColor(bufferedSource)
-                            readFieldDefBytes += 3
-
+                            val name = readString(headerBuffer)
+                            val color = readColor(headerBuffer)
                             val factor = if (fieldId and 0x80.toByte() != 0x0.toByte()) {
-                                readFieldDefBytes += 2
-                                bufferedSource.readShortLe()
+                                headerBuffer.short
                             } else 10
                             fields.add(AnalogueDataField(category, name, color, factor))
                         }
                         0x02.toByte(), 0x04.toByte() -> {
                             // Digital field
-                            val count = bufferedSource.readByte()
-                            readFieldDefBytes += 1
-
+                            val count = headerBuffer.get()
                             val visibility = if (fieldId and 0x40.toByte() != 0x0.toByte()) {
-                                readFieldDefBytes += 2
-                                bufferedSource.readShortLe()
+                                headerBuffer.short
                             } else 0xFFFF.toShort()
 
                             val factoryOnlyAll = if (fieldId and 0x20.toByte() != 0x0.toByte()) {
-                                readFieldDefBytes += 2
-                                bufferedSource.readShortLe()
+                                headerBuffer.short
                             } else 0xFFFF.toShort()
 
                             val inOutSeparate = if (fieldId and 0x04.toByte() != 0x0.toByte()) {
-                                readFieldDefBytes += 2
-                                bufferedSource.readShortLe()
+                                headerBuffer.short
                             } else if (fieldId and 0x80.toByte() != 0x0.toByte()) {
                                 0xFFFF.toShort()
                             } else 0x0.toShort()
 
                             val items = mutableListOf<DigitalDataFieldItem>()
                             for (i in 0 until count) {
-                                val name = readString(bufferedSource)
-                                readFieldDefBytes += name.length + 1 // 0 terminator
+                                val name = readString(headerBuffer)
 
-                                val color = readColor(bufferedSource)
-                                readFieldDefBytes += 3
+                                val color = readColor(headerBuffer)
 
                                 items.add(DigitalDataFieldItem(category, name, color))
                             }
@@ -146,30 +132,16 @@ class DtaFileReader {
                         }
                         0x03.toByte() -> {
                             // Enum field
-                            val name = readString(bufferedSource)
-                            readFieldDefBytes += name.length + 1 // 0 terminator
-                            val count = bufferedSource.readByte()
-                            readFieldDefBytes += 1
+                            val name = readString(headerBuffer)
+                            val count = headerBuffer.get()
 
                             val enumValues = mutableListOf<String>()
                             for (i in 0 until count) {
-                                val enumValue = readString(bufferedSource)
+                                val enumValue = readString(headerBuffer)
                                 enumValues.add(enumValue)
-                                readFieldDefBytes += enumValue.length + 1 // 0 terminator
                             }
                         }
-                        else -> {
-                            println("WARNING Unknown field type $fieldType")
-//                            throw IllegalArgumentException("Unknown field type $fieldType")
-                            return DtaFile(
-                                version,
-                                fieldDefSize,
-                                datasetsToRead,
-                                datasetLength,
-                                fields,
-                                digitalFields
-                            )
-                        }
+                        else -> throw IOException("Unknown field type $fieldType")
                     }
                 }
 
@@ -177,7 +149,7 @@ class DtaFileReader {
 
                 return DtaFile(
                     version,
-                    fieldDefSize,
+                    headerSize,
                     datasetsToRead,
                     datasetLength,
                     fields,
@@ -187,11 +159,10 @@ class DtaFileReader {
         }
     }
 
-    private fun readString(bufferedSource: BufferedSource): String {
+    private fun readString(buffer: ByteBuffer): String {
         var string = ""
-        // FIXME Prevent endless loop
         while (true) {
-            val char = bufferedSource.readByte()
+            val char = buffer.get()
             if (char == 0x0.toByte()) {
                 break
             } else {
@@ -201,11 +172,14 @@ class DtaFileReader {
         return string
     }
 
-    private fun readColor(bufferedSource: BufferedSource): Int {
-        val r = bufferedSource.readByte().toLong() // FIXME
-        val g = bufferedSource.readByte().toLong()
-        val b = bufferedSource.readByte().toLong()
+    private fun readColor(buffer: ByteBuffer): Int {
+        val r = buffer.get().toLong()
+        val g = buffer.get().toLong()
+        val b = buffer.get().toLong()
         return (0xFF000000 or r shl 16 or g shl 8 or b).toInt()
     }
 
+    companion object {
+        const val VERSION_9003 = 9003
+    }
 }
