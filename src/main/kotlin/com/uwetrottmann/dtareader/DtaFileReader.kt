@@ -46,6 +46,7 @@ class DtaFileReader {
                 }
 
                 val header = parseHeader(bufferedSource)
+                parseDataSets(bufferedSource, header.datasetsToRead, header.datasetLength.toInt())
 
                 return DtaFile(
                     version,
@@ -77,6 +78,9 @@ class DtaFileReader {
         val datasetsToRead = headerBuffer.short
         // Byte [10:11]: length of a data set
         val datasetLength = headerBuffer.short
+        if (datasetLength < 6) {
+            throw IOException("Data set length is smaller than 6 bytes (at least timestamp + 2 byte field)")
+        }
 
         val analogueFields = mutableListOf<AnalogueField>()
         val digitalFields = mutableListOf<DigitalField>()
@@ -170,6 +174,20 @@ class DtaFileReader {
             datasetsToRead,
             datasetLength
         )
+    }
+
+    private fun parseDataSets(bufferedSource: BufferedSource, count: Short, dataSetLength: Int) {
+        for (i in 0 until count) {
+            val bytes = ByteArray(dataSetLength)
+            val bytesRead = bufferedSource.read(bytes)
+            if (bytesRead == -1 || bytesRead != bytes.size) {
+                throw IOException("Data set is not $dataSetLength bytes long")
+            }
+            val buffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
+
+            val timestamp = buffer.int // unix time in seconds
+            // FIXME Need fields in header order.
+        }
     }
 
     private fun readString(buffer: ByteBuffer): String {
