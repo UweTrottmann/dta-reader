@@ -16,6 +16,7 @@
 
 package com.uwetrottmann.dtareader
 
+import okio.BufferedSource
 import okio.IOException
 import okio.buffer
 import okio.source
@@ -44,86 +45,105 @@ class DtaFileReader {
                     throw IOException("Version is not $VERSION_9003")
                 }
 
-                // Byte [4:7]: size of header
-                val headerSize = bufferedSource.readIntLe()
-                val headerBytes = ByteArray(headerSize)
-                val bytesRead = bufferedSource.read(headerBytes)
-                if (bytesRead == -1 || bytesRead != headerBytes.size) {
-                    throw IOException("Header is not $headerSize bytes long")
+                val header = parseHeader(bufferedSource)
+
+                return DtaFile(
+                    version,
+                    header.analogueFields,
+                    header.digitalFields
+                )
+            }
+        }
+    }
+
+    private data class Header(
+        val analogueFields: List<AnalogueField>,
+        val digitalFields: List<DigitalField>,
+        val datasetsToRead: Short,
+        val datasetLength: Short
+    )
+
+    private fun parseHeader(bufferedSource: BufferedSource): Header {
+        // Byte [4:7]: size of header
+        val headerSize = bufferedSource.readIntLe()
+        val headerBytes = ByteArray(headerSize)
+        val bytesRead = bufferedSource.read(headerBytes)
+        if (bytesRead == -1 || bytesRead != headerBytes.size) {
+            throw IOException("Header is not $headerSize bytes long")
+        }
+        val headerBuffer = ByteBuffer.wrap(headerBytes).order(ByteOrder.LITTLE_ENDIAN)
+
+        // Byte [8:9]: number of data sets
+        val datasetsToRead = headerBuffer.short
+        // Byte [10:11]: length of a data set
+        val datasetLength = headerBuffer.short
+
+        val analogueFields = mutableListOf<AnalogueField>()
+        val digitalFields = mutableListOf<DigitalField>()
+        var category = ""
+        while (headerBuffer.hasRemaining()) {
+            val fieldId = headerBuffer.get()
+            when (val fieldType = fieldId and 0x0F) {
+                0x00.toByte() -> {
+                    // Category
+                    category = readString(headerBuffer)
                 }
-                val headerBuffer = ByteBuffer.wrap(headerBytes).order(ByteOrder.LITTLE_ENDIAN)
+                0x01.toByte() -> {
+                    // Analogue field
+                    val name = readString(headerBuffer)
+                    val color = readColor(headerBuffer)
+                    val factor = if (fieldId and 0x80.toByte() != 0x0.toByte()) {
+                        headerBuffer.short
+                    } else 10
+                    analogueFields.add(AnalogueField(category, name, color, factor))
+                }
+                0x02.toByte(), 0x04.toByte() -> {
+                    // Digital field
+                    val count = headerBuffer.get()
+                    val visibility = if (fieldId and 0x40.toByte() != 0x0.toByte()) {
+                        headerBuffer.short
+                    } else 0xFFFF.toShort() // All visible.
 
-                // Byte [8:9]: number of data sets
-                val datasetsToRead = headerBuffer.short
-                // Byte [10:11]: length of a data set
-                val datasetLength = headerBuffer.short
+                    val customerSupportOnly = if (fieldId and 0x20.toByte() != 0x0.toByte()) {
+                        headerBuffer.short
+                    } else 0x0.toShort() // None intended for customer support.
 
-                val analogueFields = mutableListOf<AnalogueField>()
-                val digitalFields = mutableListOf<DigitalField>()
-                var category = ""
-                while (headerBuffer.hasRemaining()) {
-                    val fieldId = headerBuffer.get()
-                    when (val fieldType = fieldId and 0x0F) {
-                        0x00.toByte() -> {
-                            // Category
-                            category = readString(headerBuffer)
+                    val directions = if (fieldId and 0x04.toByte() != 0x0.toByte()) {
+                        headerBuffer.short
+                    } else if (fieldId and 0x80.toByte() != 0x0.toByte()) {
+                        // All values are outputs.
+                        0xFFFF.toShort()
+                    } else {
+                        // All values are inputs.
+                        0x0.toShort()
+                    }
+
+                    val values = mutableListOf<DigitalValue>()
+                    for (i in 0 until count) {
+                        val name = readString(headerBuffer)
+                        val color = readColor(headerBuffer)
+                        val type = if (directions.toInt() and (1 shl i) != 0) {
+                            DigitalType.OUTPUT
+                        } else {
+                            DigitalType.INPUT
                         }
-                        0x01.toByte() -> {
-                            // Analogue field
-                            val name = readString(headerBuffer)
-                            val color = readColor(headerBuffer)
-                            val factor = if (fieldId and 0x80.toByte() != 0x0.toByte()) {
-                                headerBuffer.short
-                            } else 10
-                            analogueFields.add(AnalogueField(category, name, color, factor))
-                        }
-                        0x02.toByte(), 0x04.toByte() -> {
-                            // Digital field
-                            val count = headerBuffer.get()
-                            val visibility = if (fieldId and 0x40.toByte() != 0x0.toByte()) {
-                                headerBuffer.short
-                            } else 0xFFFF.toShort() // All visible.
-
-                            val customerSupportOnly = if (fieldId and 0x20.toByte() != 0x0.toByte()) {
-                                headerBuffer.short
-                            } else 0x0.toShort() // None intended for customer support.
-
-                            val directions = if (fieldId and 0x04.toByte() != 0x0.toByte()) {
-                                headerBuffer.short
-                            } else if (fieldId and 0x80.toByte() != 0x0.toByte()) {
-                                // All values are outputs.
-                                0xFFFF.toShort()
-                            } else {
-                                // All values are inputs.
-                                0x0.toShort()
-                            }
-
-                            val values = mutableListOf<DigitalValue>()
-                            for (i in 0 until count) {
-                                val name = readString(headerBuffer)
-                                val color = readColor(headerBuffer)
-                                val type = if (directions.toInt() and (1 shl i) != 0) {
-                                    DigitalType.OUTPUT
-                                } else {
-                                    DigitalType.INPUT
-                                }
-                                values.add(
-                                    DigitalValue(
-                                        category,
-                                        name,
-                                        color,
-                                        visibility.toInt() and (1 shl i) != 0,
-                                        customerSupportOnly.toInt() and (1 shl i) != 0,
-                                        type
-                                    )
-                                )
-                            }
-                            digitalFields.add(DigitalField(values))
-                        }
-                        0x03.toByte() -> {
-                            // TODO Appears not used in test file, so not implementing.
-                            //   Ask users to send in their file to add to this project for testing.
-                            throw IOException("Enum fields are not supported, please send your DTA file for testing.")
+                        values.add(
+                            DigitalValue(
+                                category,
+                                name,
+                                color,
+                                visibility.toInt() and (1 shl i) != 0,
+                                customerSupportOnly.toInt() and (1 shl i) != 0,
+                                type
+                            )
+                        )
+                    }
+                    digitalFields.add(DigitalField(values))
+                }
+                0x03.toByte() -> {
+                    // TODO Appears not used in test file, so not implementing.
+                    //   Ask users to send in their file to add to this project for testing.
+                    throw IOException("Enum fields are not supported, please send your DTA file for testing.")
 //                            // Enum field
 //                            val name = readString(headerBuffer)
 //                            val count = headerBuffer.get()
@@ -133,23 +153,23 @@ class DtaFileReader {
 //                                val enumValue = readString(headerBuffer)
 //                                enumValues.add(enumValue)
 //                            }
-                        }
-                        else -> throw IOException("Unknown field type $fieldType")
-                    }
                 }
-
-                // Check number of fields * 2 (length of value) == data set length
-
-                return DtaFile(
-                    version,
-                    headerSize,
-                    datasetsToRead,
-                    datasetLength,
-                    analogueFields,
-                    digitalFields
-                )
+                else -> throw IOException("Unknown field type $fieldType")
             }
         }
+
+        // Check number of fields * 2 (length of value) == data set length
+        val expectedDataSetLength = analogueFields.size * 2 + digitalFields.size * 2 + 4 // 4 byte time stamp
+        if (expectedDataSetLength != datasetLength.toInt()) {
+            throw IOException("Announced data set length ($datasetLength bytes) does not match fields ($expectedDataSetLength bytes)")
+        }
+
+        return Header(
+            analogueFields,
+            digitalFields,
+            datasetsToRead,
+            datasetLength
+        )
     }
 
     private fun readString(buffer: ByteBuffer): String {
@@ -178,9 +198,6 @@ class DtaFileReader {
 
     data class DtaFile(
         val version: Int,
-        val fieldDefSize: Int,
-        val datasetsToRead: Short,
-        val datasetLength: Short,
         val analogueFields: List<AnalogueField>,
         val digitalFields: List<DigitalField>
     )
