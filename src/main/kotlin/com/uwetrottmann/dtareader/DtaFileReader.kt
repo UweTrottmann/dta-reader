@@ -121,15 +121,18 @@ class DtaFileReader {
                             digitalFields.add(DigitalField(values))
                         }
                         0x03.toByte() -> {
-                            // Enum field
-                            val name = readString(headerBuffer)
-                            val count = headerBuffer.get()
-
-                            val enumValues = mutableListOf<String>()
-                            for (i in 0 until count) {
-                                val enumValue = readString(headerBuffer)
-                                enumValues.add(enumValue)
-                            }
+                            // TODO Appears not used in test file, so not implementing.
+                            //   Ask users to send in their file to add to this project for testing.
+                            throw IOException("Enum fields are not supported, please send your DTA file for testing.")
+//                            // Enum field
+//                            val name = readString(headerBuffer)
+//                            val count = headerBuffer.get()
+//
+//                            val enumValues = mutableListOf<String>()
+//                            for (i in 0 until count) {
+//                                val enumValue = readString(headerBuffer)
+//                                enumValues.add(enumValue)
+//                            }
                         }
                         else -> throw IOException("Unknown field type $fieldType")
                     }
