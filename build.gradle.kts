@@ -12,11 +12,14 @@ repositories {
 }
 
 dependencies {
+    implementation("com.squareup.okio:okio:3.0.0")
+
+    testImplementation("junit:junit:4.13.2")
     testImplementation(kotlin("test"))
 }
 
 tasks.test {
-    useJUnitPlatform()
+    useJUnit()
 }
 
 tasks.withType<KotlinCompile> {
